@@ -1,0 +1,76 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+##############################################################################
+# Manual GitHub Actions workflow which analyzes the Code Scanning alerts for
+# a period of time and generates Markdown output. Optionally, the workflow
+# can automatically re-open all of the retrieved alerts.
+##############################################################################
+
+name: Alerts Report
+on:
+  workflow_dispatch:
+    inputs:
+      state:
+        type: choice
+        description: State
+        required: true
+        default: dismissed
+        options: 
+        - open
+        - closed
+        - dismissed
+      timeframe:
+        type: choice
+        description: Data retrieval timeframe
+        required: true
+        default: "1 month"
+        options:
+        - 24 hours
+        - 48 hours
+        - 1 week
+        - 1 month
+      reopen-dismissed:
+        type: boolean
+        description: Reopen dismissed alerts
+        required: true
+        default: false
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+
+    steps:
+
+    # Define an environment variable that represents the start date for retrieving alerts
+    - run: echo "START_DATE=$(date -d '-${{ inputs.timeframe }}' --iso-8601='minutes')" >> $GITHUB_ENV
+    
+    # Define an environment variable for the path to a file that will be used to capture the alerts
+    - run: echo "ALERTS_PATH=${{ runner.temp}}/alerts.json" >> $GITHUB_ENV
+    
+    # Using the GH CLI (authenticated with the GITHUB_TOKEN), query the scanning alerts in the requested
+    # state (open/closed/dismissed) and save a subset of the details to the temporary file for further
+    # processing and evaluation. Use --paginate to ensure we get all of the records.
+    - run: |
+         echo ${{ secrets.GITHUB_TOKEN }} | gh auth login --with-token
+         gh api -X GET repos/${{ github.repository }}/code-scanning/alerts -f after="${{ env.START_DATE }}" \
+            --paginate -f state=${{ inputs.state }} \
+            --jq '[.[] | { id: .number, state, url, dismissed_by : .dismissed_by.login , rule: .rule.id, severity: .rule.severity, level: .rule.security_severity_level }]' >> ${{ env.ALERTS_PATH }}         
+    
+    # For demonstration purposes only, output the contents of the file.
+    - run: cat $ALERTS_PATH
+    
+    # Convert the JSON-formatted alert details to a Markdown table and save the
+    # results to the Step Summary for display.
+    - run: |
+         echo "| ID | State | Dismissed By | Severity | Level |" >> $GITHUB_STEP_SUMMARY
+         echo "| -- | ----- | ------------ | -------- | ----- |" >> $GITHUB_STEP_SUMMARY
+         jq '.[] | @text "| \(.id) | \(.state) | \(.dismissed_by) | \(.severity) | \(.level) |"' -r $ALERTS_PATH >> $GITHUB_STEP_SUMMARY
+
+    # If the report is a list of dismissed alerts AND if the user has chosen to reopen those alerts,
+    # use a Bash script and the GH CLI to re-open each alert
+    - if: ${{ inputs.state == 'dismissed' && inputs.reopen-dismissed }}
+      run: |
+         for row in $(jq -r '.[] | @base64' $ALERTS_PATH); do
+           echo $( echo "$row" | base64 --decode | jq -r '.url' );
+           gh api --method PATCH -H "Accept: application/vnd.github.v3+json" \
+              "/repos/${{ github.repository }}/code-scanning/alerts/$( echo "$row" | base64 --decode | jq -r '.id' )" -f state='open'
+         done
