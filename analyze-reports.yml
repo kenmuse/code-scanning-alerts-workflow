@@ -50,11 +50,12 @@ jobs:
     # state (open/closed/dismissed) and save a subset of the details to the temporary file for further
     # processing and evaluation. Use --paginate to ensure we get all of the records.
     - run: |
-         echo ${{ secrets.GITHUB_TOKEN }} | gh auth login --with-token
          gh api -X GET repos/${{ github.repository }}/code-scanning/alerts -f after="${{ env.START_DATE }}" \
             --paginate -f state=${{ inputs.state }} \
             --jq '[.[] | { id: .number, state, url, dismissed_by : .dismissed_by.login , rule: .rule.id, severity: .rule.severity, level: .rule.security_severity_level }]' >> ${{ env.ALERTS_PATH }}         
-    
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
     # For demonstration purposes only, output the contents of the file.
     - run: cat $ALERTS_PATH
     
